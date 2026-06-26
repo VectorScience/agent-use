@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full bg-bg text-text;
+  }
+  body {
+    @apply antialiased;
+    font-feature-settings: "cv11", "ss01";
+    /* iOS safe areas */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer components {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #262b36 transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #262b36;
+    border-radius: 3px;
+  }
+}
+
+/* Markdown rendering inside chat bubbles */
+.md-body {
+  @apply text-[14px] leading-relaxed;
+}
+.md-body p {
+  @apply my-1.5;
+}
+.md-body pre {
+  @apply my-2 rounded-lg bg-black/40 p-3 overflow-x-auto text-[12.5px] font-mono;
+}
+.md-body code {
+  @apply font-mono text-[12.5px];
+}
+.md-body :not(pre) > code {
+  @apply rounded bg-black/40 px-1 py-0.5 text-[12px];
+}
+.md-body ul,
+.md-body ol {
+  @apply my-1.5 pl-5;
+}
+.md-body ul {
+  @apply list-disc;
+}
+.md-body ol {
+  @apply list-decimal;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3 {
+  @apply font-semibold my-2;
+}
+.md-body h1 {
+  @apply text-base;
+}
+.md-body h2 {
+  @apply text-[15px];
+}
+.md-body h3 {
+  @apply text-sm;
+}
+.md-body a {
+  @apply text-accent underline-offset-2 hover:underline;
+}
+.md-body table {
+  @apply my-2 w-full text-[12.5px];
+}
+.md-body th,
+.md-body td {
+  @apply border border-line px-2 py-1 text-left;
+}
+.md-body blockquote {
+  @apply border-l-2 border-line pl-3 text-text-muted italic my-2;
+}
