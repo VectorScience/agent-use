@@ -12,6 +12,6 @@ if not exist "%CURSOR_EXE%" (
   exit /b 1
 )
 
-echo Starting Cursor with --remote-debugging-port=9222 ...
-start "" "%CURSOR_EXE%" --remote-debugging-port=9222
+echo Starting Cursor with --remote-debugging-port=9222 --remote-allow-origins=* ...
+start "" "%CURSOR_EXE%" --remote-debugging-port=9222 --remote-allow-origins=*
 endlocal

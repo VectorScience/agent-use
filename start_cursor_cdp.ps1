@@ -20,8 +20,8 @@ if ($running) {
     Start-Sleep -Seconds 2
 }
 
-Write-Host "[启动] $cursorExe --remote-debugging-port=$Port"
-Start-Process -FilePath $cursorExe -ArgumentList "--remote-debugging-port=$Port"
+Write-Host "[启动] $cursorExe --remote-debugging-port=$Port --remote-allow-origins=*"
+Start-Process -FilePath $cursorExe -ArgumentList "--remote-debugging-port=$Port", "--remote-allow-origins=*"
 
 $cdpUrl = "http://127.0.0.1:$Port/json"
 Write-Host "[等待] CDP 端口就绪 ($cdpUrl) ..."

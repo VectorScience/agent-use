@@ -21,12 +21,17 @@ import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 LOG = logging.getLogger("cursor_cdp")
 
 # Selectors kept in one place so CLI / server / future tests agree.
 SEND_BUTTON_SELECTORS: list[str] = [
+    # 新版 Cursor (TipTap): ui-prompt-input-submit-button
+    ".ui-prompt-input-submit-button",
+    'button[aria-label="Send message"]',
+    'button[aria-label="发送消息"]',
+    # 兼容旧版
     'button[aria-label="Send"]',
     'button[aria-label="发送"]',
     ".send-with-mode .anysphere-icon-button",
@@ -37,21 +42,74 @@ STOP_BUTTON_SELECTORS: list[str] = [
     'button[aria-label="Stop"]',
     'button[aria-label="停止"]',
     '.stop-button[aria-label="Stop"]',
+    '.stop-button',
     '.composer-stop-button',
+    '[class*="stop-button"]',
 ]
 
 COMPOSER_SELECTORS: list[str] = [
+    # 新版 Cursor Agents 独立窗口
+    ".ui-prompt-input-editor",
+    ".ui-prompt-input",
+    "[class*='ui-prompt-input']",
+    # 旧版项目内 Agent 面板
     "[data-composer-id]",
     ".composer-bar",
     ".composite.auxiliarybar",
     ".aislash-editor-input",
 ]
 
+# 窗口模式
+WINDOW_MODE_LEGACY = "legacy"   # 项目内 Agent，标题如 "file - Project - Cursor"
+WINDOW_MODE_AGENTS = "agents"  # 独立 Cursor Agents 窗口，标题如 "Cursor Agents"
+WINDOW_MODE_AUTO = "auto"
+
+
+def classify_window_mode(title: str) -> str:
+    """根据窗口标题判断 Agent 面板类型。"""
+    t = (title or "").strip().casefold()
+    if t == "cursor agents" or t.startswith("cursor agents "):
+        return WINDOW_MODE_AGENTS
+    if t.endswith(" - cursor") or " - cursor" in t:
+        return WINDOW_MODE_LEGACY
+    return WINDOW_MODE_LEGACY
+
+# Agent 对话标签（侧栏 / 顶栏）
+CHAT_TAB_SELECTORS: list[str] = [
+    ".agent-sidebar-cell",
+    '[class*="agent-tabs"] li[class*="action-item"] a[aria-id="chat-horizontal-tab"]',
+    '[class*="agent-tabs"] li a[aria-id="chat-horizontal-tab"]',
+    ".tab .composer-tab-label",
+]
+
+MODE_DROPDOWN_SELECTORS: list[str] = [
+    ".composer-unified-dropdown",
+    '[class*="composer-unified-dropdown"]',
+    '[class*="mode-dropdown"]',
+]
+
+MODEL_DROPDOWN_SELECTORS: list[str] = [
+    ".composer-unified-dropdown-model",
+    '[class*="composer-unified-dropdown-model"]',
+    '[class*="model-dropdown"]',
+]
+
+MODE_MENU_ITEM_SELECTORS: list[str] = [
+    ".composer-unified-context-menu-item",
+    '[class*="composer-unified-context-menu-item"]',
+    '[role="menuitem"]',
+    '[role="option"]',
+]
+
 COMPOSER_INPUT_SELECTORS: list[str] = [
+    # 新版 Cursor 用 TipTap/ProseMirror，类名 ui-prompt-input-editor__input
+    ".tiptap.ProseMirror[contenteditable='true']",
+    ".ProseMirror[contenteditable='true']",
+    ".ui-prompt-input-editor__input[contenteditable='true']",
+    # 兼容旧版 Slate
     "[data-composer-id] [contenteditable='true']",
     ".composer-bar [contenteditable='true']",
     ".aislash-editor-input",
-    ".composite.auxiliarybar [contenteditable='true']",
 ]
 
 
@@ -84,7 +142,14 @@ def _cdp_evaluate(ws_url: str, expression: str, *, await_promise: bool = False) 
     """
     import websocket
 
-    ws = websocket.create_connection(ws_url, timeout=10)
+    # 新版 Chromium 要求 Origin 在白名单里。我们主动带一个匹配的 Origin，
+    # 配合 Cursor 启动时的 --remote-allow-origins=* 即可握手成功。
+    ws = websocket.create_connection(
+        ws_url,
+        timeout=10,
+        origin="http://127.0.0.1:9222",
+        suppress_origin=False,
+    )
     try:
         _cdp_send_recv(ws, "Runtime.enable", None, 1)
         result = _cdp_send_recv(
@@ -180,6 +245,49 @@ def log_cdp_connection_help(port: int) -> None:
         LOG.error("未检测到 Cursor 进程，请先运行 start_cursor_cdp.ps1。")
 
 
+# --------------------------------------------------------------------------- #
+# Application profiles
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class CdpProfile:
+    """一个受控应用（Cursor / ChatGPT / …）的全部 DOM 约定。
+
+    把「选择器 + 页面识别 + 进程探测」收敛到一处，高层操作函数按 profile
+    参数化，避免运行时改共享全局（交错任务时会互相污染）。
+    """
+
+    name: str
+    send_selectors: list[str]
+    stop_selectors: list[str]
+    composer_selectors: list[str]
+    composer_input_selectors: list[str]
+    chat_tab_selectors: list[str]
+    mode_dropdown_selectors: list[str]
+    model_dropdown_selectors: list[str]
+    mode_menu_item_selectors: list[str]
+    match_pages: Callable[[Iterable[dict]], list[dict]]
+    classify_title: Callable[[str], str] = classify_window_mode
+    is_running: Callable[[], bool] = is_cursor_running
+    process_name: str = "Cursor.exe"
+
+
+CURSOR_PROFILE = CdpProfile(
+    name="cursor",
+    send_selectors=SEND_BUTTON_SELECTORS,
+    stop_selectors=STOP_BUTTON_SELECTORS,
+    composer_selectors=COMPOSER_SELECTORS,
+    composer_input_selectors=COMPOSER_INPUT_SELECTORS,
+    chat_tab_selectors=CHAT_TAB_SELECTORS,
+    mode_dropdown_selectors=MODE_DROPDOWN_SELECTORS,
+    model_dropdown_selectors=MODEL_DROPDOWN_SELECTORS,
+    mode_menu_item_selectors=MODE_MENU_ITEM_SELECTORS,
+    match_pages=list_workbench_targets,
+    classify_title=classify_window_mode,
+    is_running=is_cursor_running,
+    process_name="Cursor.exe",
+)
+
+
 @dataclass
 class WorkbenchTarget:
     ws_url: str
@@ -191,25 +299,38 @@ def pick_workbench_target(
     cdp_base: str,
     *,
     window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
     prefer_foreground: bool = True,
+    profile: CdpProfile = CURSOR_PROFILE,
 ) -> WorkbenchTarget | None:
-    """Pick the best Cursor workbench page.
+    """Pick the best workbench page for ``profile``.
+
+    ``window_mode``:
+      - ``legacy``: 项目内旧 Agent 窗口（排除 Cursor Agents 独立窗口）
+      - ``agents``: 新版 Cursor Agents 独立窗口
+      - ``auto``: 不过滤模式
 
     Selection order:
-    1. Filter by ``window_title`` substring if given.
-    2. Prefer one whose title matches the current foreground window.
-    3. Prefer one whose Agent panel is already visible + send button present.
-    4. Fall back to any one with the Agent panel visible.
-    5. Otherwise return the first candidate (best effort).
+    1. Filter by ``window_mode`` if not auto.
+    2. Filter by ``window_title`` substring if given.
+    3. Prefer foreground window.
+    4. Prefer Agent panel visible + send button ready.
     """
     try:
         targets = list_cdp_targets(cdp_base)
     except (urllib.error.URLError, TimeoutError, ConnectionError):
         return None
 
-    pages = list_workbench_targets(targets)
+    pages = profile.match_pages(targets)
     if not pages:
         return None
+
+    if window_mode != WINDOW_MODE_AUTO:
+        mode_filtered = [
+            p for p in pages if profile.classify_title(p.get("title") or "") == window_mode
+        ]
+        if mode_filtered:
+            pages = mode_filtered
 
     if window_title:
         needle = window_title.casefold()
@@ -232,13 +353,13 @@ def pick_workbench_target(
     # Pass A: panel visible AND send button ready.
     for page in pages:
         tgt = to_target(page)
-        if tgt.ws_url and _target_ready(tgt.ws_url, need_send_button=True):
+        if tgt.ws_url and _target_ready(tgt.ws_url, need_send_button=True, profile=profile):
             return tgt
 
     # Pass B: panel visible (button not necessarily present yet).
     for page in pages:
         tgt = to_target(page)
-        if tgt.ws_url and _target_ready(tgt.ws_url, need_send_button=False):
+        if tgt.ws_url and _target_ready(tgt.ws_url, need_send_button=False, profile=profile):
             return tgt
 
     # Pass C: anything.
@@ -249,12 +370,12 @@ def pick_workbench_target(
     return None
 
 
-def _target_ready(ws_url: str, need_send_button: bool) -> bool:
-    if not agent_panel_visible_by_ws(ws_url):
+def _target_ready(ws_url: str, need_send_button: bool, *, profile: CdpProfile = CURSOR_PROFILE) -> bool:
+    if not agent_panel_visible_by_ws(ws_url, profile=profile):
         return False
     if not need_send_button:
         return True
-    selectors_json = json.dumps(SEND_BUTTON_SELECTORS)
+    selectors_json = json.dumps(profile.send_selectors)
     expr = f"""
 (() => {{
   const selectors = {selectors_json};
@@ -275,8 +396,8 @@ def _target_ready(ws_url: str, need_send_button: bool) -> bool:
 # --------------------------------------------------------------------------- #
 # High-level operations
 # --------------------------------------------------------------------------- #
-def agent_panel_visible_by_ws(ws_url: str) -> bool:
-    selectors_json = json.dumps(COMPOSER_SELECTORS)
+def agent_panel_visible_by_ws(ws_url: str, *, profile: CdpProfile = CURSOR_PROFILE) -> bool:
+    selectors_json = json.dumps(profile.composer_selectors)
     expr = f"""
 (() => {{
   const selectors = {selectors_json};
@@ -288,7 +409,7 @@ def agent_panel_visible_by_ws(ws_url: str) -> bool:
 
 @dataclass
 class CursorStatus:
-    """Snapshot of the Cursor workbench relevant to the mobile UI."""
+    """Snapshot of the workbench relevant to the mobile UI."""
 
     cdp_reachable: bool
     cursor_running: bool
@@ -297,9 +418,11 @@ class CursorStatus:
     stop_button_present: bool
     workbench_title: str
     composer_text: str
+    app: str = "cursor"
 
     def to_dict(self) -> dict:
         return {
+            "app": self.app,
             "cdp_reachable": self.cdp_reachable,
             "cursor_running": self.cursor_running,
             "agent_panel_visible": self.agent_panel_visible,
@@ -310,13 +433,19 @@ class CursorStatus:
         }
 
 
-def read_status(cdp_base: str, *, window_title: str | None = None) -> CursorStatus:
+def read_status(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> CursorStatus:
     """Probe the workbench and return a serialisable status snapshot.
 
     Each step is defensive — if CDP is unreachable we still return a usable
     status object so the UI can render the "offline" state.
     """
-    running = is_cursor_running()
+    running = profile.is_running()
     try:
         reachable = is_cdp_reachable(cdp_base)
     except Exception:
@@ -331,9 +460,12 @@ def read_status(cdp_base: str, *, window_title: str | None = None) -> CursorStat
             stop_button_present=False,
             workbench_title="",
             composer_text="",
+            app=profile.name,
         )
 
-    tgt = pick_workbench_target(cdp_base, window_title=window_title)
+    tgt = pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
     if not tgt:
         return CursorStatus(
             cdp_reachable=True,
@@ -343,13 +475,14 @@ def read_status(cdp_base: str, *, window_title: str | None = None) -> CursorStat
             stop_button_present=False,
             workbench_title="",
             composer_text="",
+            app=profile.name,
         )
 
     expr = f"""
 (() => {{
-  const sendSel = {json.dumps(SEND_BUTTON_SELECTORS)};
-  const stopSel = {json.dumps(STOP_BUTTON_SELECTORS)};
-  const inputSel = {json.dumps(COMPOSER_INPUT_SELECTORS)};
+  const sendSel = {json.dumps(profile.send_selectors)};
+  const stopSel = {json.dumps(profile.stop_selectors)};
+  const inputSel = {json.dumps(profile.composer_input_selectors)};
 
   let sendEnabled = false;
   for (const sel of sendSel) {{
@@ -392,15 +525,24 @@ def read_status(cdp_base: str, *, window_title: str | None = None) -> CursorStat
         stop_button_present=bool(info.get("stopPresent")),
         workbench_title=tgt.title,
         composer_text=str(info.get("composerText") or ""),
+        app=profile.name,
     )
 
 
-def click_send(cdp_base: str, *, window_title: str | None = None) -> dict:
+def click_send(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
     """Find and click the Send button. Returns ``{{ok, selector? | reason}}``."""
-    tgt = pick_workbench_target(cdp_base, window_title=window_title)
+    tgt = pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
     if not tgt:
         return {"ok": False, "reason": "no workbench target"}
-    selectors_json = json.dumps(SEND_BUTTON_SELECTORS)
+    selectors_json = json.dumps(profile.send_selectors)
     expr = f"""
 (() => {{
   const selectors = {selectors_json};
@@ -423,12 +565,20 @@ def click_send(cdp_base: str, *, window_title: str | None = None) -> dict:
     return result
 
 
-def click_stop(cdp_base: str, *, window_title: str | None = None) -> dict:
+def click_stop(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
     """Find and click the Stop button (when agent is running)."""
-    tgt = pick_workbench_target(cdp_base, window_title=window_title)
+    tgt = pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
     if not tgt:
         return {"ok": False, "reason": "no workbench target"}
-    selectors_json = json.dumps(STOP_BUTTON_SELECTORS)
+    selectors_json = json.dumps(profile.stop_selectors)
     expr = f"""
 (() => {{
   const selectors = {selectors_json};
@@ -455,7 +605,9 @@ def set_composer_text(
     text: str,
     *,
     window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
     mode: str = "replace",
+    profile: CdpProfile = CURSOR_PROFILE,
 ) -> dict:
     """Write ``text`` into the composer input.
 
@@ -467,10 +619,12 @@ def set_composer_text(
     so Cursor's controlled input picks up the change (a plain ``textContent``
     assignment would be ignored by React).
     """
-    tgt = pick_workbench_target(cdp_base, window_title=window_title)
+    tgt = pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
     if not tgt:
         return {"ok": False, "reason": "no workbench target"}
-    selectors_json = json.dumps(COMPOSER_INPUT_SELECTORS)
+    selectors_json = json.dumps(profile.composer_input_selectors)
     safe_text = json.dumps(text)
     is_replace = "true" if mode == "replace" else "false"
     expr = f"""
@@ -507,20 +661,29 @@ def capture_screenshot(
     cdp_base: str,
     *,
     window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
     quality: int = 70,
     max_width: int | None = 1280,
+    profile: CdpProfile = CURSOR_PROFILE,
 ) -> bytes | None:
     """Capture the workbench as a JPEG byte string.
 
     JPEG over PNG for size — we're streaming this to a phone over LAN. Quality
     70 is visually fine for a chat UI and ~5x smaller than PNG.
     """
-    tgt = pick_workbench_target(cdp_base, window_title=window_title)
+    tgt = pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
     if not tgt:
         return None
     import websocket
 
-    ws = websocket.create_connection(tgt.ws_url, timeout=15)
+    ws = websocket.create_connection(
+        tgt.ws_url,
+        timeout=15,
+        origin="http://127.0.0.1:9222",
+        suppress_origin=False,
+    )
     try:
         _cdp_send_recv(ws, "Page.enable", None, 1)
         params: dict[str, Any] = {"format": "jpeg", "quality": quality}
@@ -536,13 +699,13 @@ def capture_screenshot(
         ws.close()
 
 
-def list_windows(cdp_base: str) -> list[dict]:
-    """Return ``[{title, url, ws_url}]`` for every Cursor workbench page."""
+def list_windows(cdp_base: str, *, profile: CdpProfile = CURSOR_PROFILE) -> list[dict]:
+    """Return workbench pages with ``mode`` (legacy|agents) and ``foreground``."""
     try:
         targets = list_cdp_targets(cdp_base)
     except Exception:
         return []
-    pages = list_workbench_targets(targets)
+    pages = profile.match_pages(targets)
     fg = get_foreground_window_title()
     out = []
     for p in pages:
@@ -552,7 +715,270 @@ def list_windows(cdp_base: str) -> list[dict]:
                 "title": title,
                 "url": p.get("url") or "",
                 "ws_url": p.get("webSocketDebuggerUrl") or "",
+                "mode": profile.classify_title(title),
                 "foreground": bool(fg and fg.casefold() in title.casefold()),
             }
         )
     return out
+
+
+def _resolve_target(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> WorkbenchTarget | None:
+    return pick_workbench_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+
+
+def list_chat_tabs(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> list[dict]:
+    """列出当前窗口的 Agent 对话标签。"""
+    tgt = _resolve_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    if not tgt:
+        return []
+    tab_sel = json.dumps(profile.chat_tab_selectors)
+    expr = f"""
+(() => {{
+  const tabSelectors = {tab_sel};
+  const tabs = [];
+  const seen = new Set();
+  for (const sel of tabSelectors) {{
+    for (const el of document.querySelectorAll(sel)) {{
+      const title = (
+        el.getAttribute('aria-label') ||
+        el.getAttribute('title') ||
+        el.textContent ||
+        ''
+      ).trim();
+      if (!title || seen.has(title)) continue;
+      seen.add(title);
+      const selected =
+        el.getAttribute('data-selected') === 'true' ||
+        el.getAttribute('data-highlighted') === 'true' ||
+        el.classList.contains('selected') ||
+        el.classList.contains('active') ||
+        el.classList.contains('checked') ||
+        !!el.closest('.selected, .active, .checked, [data-selected="true"]');
+      tabs.push({{ title, selected, selector: sel }});
+    }}
+  }}
+  return tabs;
+}})()
+"""
+    result = _cdp_evaluate(tgt.ws_url, expr)
+    return result if isinstance(result, list) else []
+
+
+def switch_chat_tab(
+    cdp_base: str,
+    tab_title: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
+    """按标题子串切换到 Agent 对话标签。"""
+    tgt = _resolve_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    if not tgt:
+        return {"ok": False, "reason": "no workbench target"}
+    needle = json.dumps(tab_title)
+    tab_sel = json.dumps(profile.chat_tab_selectors)
+    expr = f"""
+(() => {{
+  const needle = {needle}.toLowerCase();
+  const tabSelectors = {tab_sel};
+  for (const sel of tabSelectors) {{
+    for (const el of document.querySelectorAll(sel)) {{
+      const title = (
+        el.getAttribute('aria-label') ||
+        el.getAttribute('title') ||
+        el.textContent ||
+        ''
+      ).trim();
+      if (!title.toLowerCase().includes(needle)) continue;
+      el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+      el.click();
+      return {{ ok: true, title, selector: sel }};
+    }}
+  }}
+  return {{ ok: false, reason: 'chat tab not found: ' + {needle} }};
+}})()
+"""
+    result = _cdp_evaluate(tgt.ws_url, expr)
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "unexpected evaluate result"}
+    return result
+
+
+def read_composer_settings(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
+    """读取当前 composer 的模式、模型、对话标签列表。"""
+    tgt = _resolve_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    if not tgt:
+        return {"ok": False, "reason": "no workbench target"}
+    mode_sel = json.dumps(profile.mode_dropdown_selectors)
+    model_sel = json.dumps(profile.model_dropdown_selectors)
+    expr = f"""
+(() => {{
+  let mode = '';
+  for (const sel of {mode_sel}) {{
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    mode = el.getAttribute('data-mode') || el.textContent?.trim() || '';
+    if (mode) break;
+  }}
+  let model = '';
+  for (const sel of {model_sel}) {{
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    model = (el.textContent || el.getAttribute('aria-label') || '').trim();
+    if (model) break;
+  }}
+  return {{ ok: true, mode, model }};
+}})()
+"""
+    result = _cdp_evaluate(tgt.ws_url, expr)
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "unexpected evaluate result"}
+    result["chat_tabs"] = list_chat_tabs(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    return result
+
+
+def set_composer_mode(
+    cdp_base: str,
+    mode_label: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
+    """设置 composer 模式（如 Agent / Ask / Edit）。"""
+    tgt = _resolve_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    if not tgt:
+        return {"ok": False, "reason": "no workbench target"}
+    needle = json.dumps(mode_label)
+    mode_sel = json.dumps(profile.mode_dropdown_selectors)
+    item_sel = json.dumps(profile.mode_menu_item_selectors)
+    expr = f"""
+(() => {{
+  const needle = {needle}.toLowerCase();
+  let trigger = null;
+  for (const sel of {mode_sel}) {{
+    trigger = document.querySelector(sel);
+    if (trigger) break;
+  }}
+  if (!trigger) return {{ ok: false, reason: 'mode dropdown not found' }};
+  trigger.click();
+  const items = [];
+  for (const sel of {item_sel}) {{
+    items.push(...document.querySelectorAll(sel));
+  }}
+  for (const item of items) {{
+    const text = (item.textContent || item.getAttribute('aria-label') || '').trim();
+    if (!text.toLowerCase().includes(needle)) continue;
+    item.click();
+    return {{ ok: true, mode: text }};
+  }}
+  return {{ ok: false, reason: 'mode item not found: ' + {needle} }};
+}})()
+"""
+    result = _cdp_evaluate(tgt.ws_url, expr)
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "unexpected evaluate result"}
+    return result
+
+
+def set_composer_model(
+    cdp_base: str,
+    model_label: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
+    """设置模型（如 auto / GLM-5.2）。"""
+    tgt = _resolve_target(
+        cdp_base, window_title=window_title, window_mode=window_mode, profile=profile
+    )
+    if not tgt:
+        return {"ok": False, "reason": "no workbench target"}
+    needle = json.dumps(model_label)
+    model_sel = json.dumps(profile.model_dropdown_selectors)
+    item_sel = json.dumps(profile.mode_menu_item_selectors)
+    expr = f"""
+(() => {{
+  const needle = {needle}.toLowerCase();
+  let trigger = null;
+  for (const sel of {model_sel}) {{
+    trigger = document.querySelector(sel);
+    if (trigger) break;
+  }}
+  if (!trigger) return {{ ok: false, reason: 'model dropdown not found' }};
+  trigger.click();
+  const items = [];
+  for (const sel of {item_sel}) {{
+    items.push(...document.querySelectorAll(sel));
+  }}
+  for (const item of items) {{
+    const text = (item.textContent || item.getAttribute('aria-label') || '').trim();
+    if (!text.toLowerCase().includes(needle)) continue;
+    item.click();
+    return {{ ok: true, model: text }};
+  }}
+  return {{ ok: false, reason: 'model item not found: ' + {needle} }};
+}})()
+"""
+    result = _cdp_evaluate(tgt.ws_url, expr)
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "unexpected evaluate result"}
+    return result
+
+
+def wait_for_agent_idle(
+    cdp_base: str,
+    *,
+    window_title: str | None = None,
+    window_mode: str = WINDOW_MODE_AUTO,
+    timeout_seconds: int = 3600,
+    poll_seconds: float = 3.0,
+    profile: CdpProfile = CURSOR_PROFILE,
+) -> dict:
+    """等待 Agent 运行结束（Stop 按钮消失）。"""
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status = read_status(
+            cdp_base,
+            window_title=window_title,
+            window_mode=window_mode,
+            profile=profile,
+        )
+        if not status.stop_button_present:
+            return {"ok": True, "idle": True}
+        time.sleep(poll_seconds)
+    return {"ok": False, "reason": f"agent still running after {timeout_seconds}s"}

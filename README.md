@@ -1,20 +1,22 @@
 # Cursor Remote
 
-通过手机（或任意浏览器）远程控制 PC 上的 Cursor IDE。
+通过手机（或任意浏览器）远程控制 PC 上的 Cursor IDE 与 ChatGPT 桌面版。
 
 - 实时查看 Cursor 的 workbench 屏幕
 - 浏览**完整**的 Agent 对话历史（包括 user / assistant / 工具调用）
 - 在手机上输入文字 → 同步到 Cursor 的 composer
 - 一键发送 / 停止 Agent
+- 定时向 Cursor Agent / ChatGPT 发送消息（多应用、多窗口）
 
 ## 架构
 
 ```
 ┌──────────────┐   HTTP/WS   ┌─────────────────────┐    CDP    ┌──────────┐
 │  手机 / 浏览器 │ <────────> │  PC: FastAPI bridge  │ <───────> │  Cursor  │
-│  (网页/Tauri) │             │  - 截图推流           │           │ (Electron)│
-└──────────────┘             │  - jsonl 解析         │           └──────────┘
-                             │  - 发送/停止/输入     │
+│  (网页/Tauri) │             │  - 截图推流           │   :9222   └──────────┘
+└──────────────┘             │  - jsonl 解析         │    CDP    ┌──────────┐
+                             │  - 发送/停止/输入     │ <───────> │ ChatGPT  │
+                             │  - 定时任务调度       │   :9223   └──────────┘
                              └─────────────────────┘
 ```
 
@@ -22,14 +24,81 @@
 
 | 模块 | 职责 |
 |---|---|
-| `cursor_cdp.py` | CDP 协议封装：找窗口、读状态、点按钮、截图、写输入框（CLI 和服务端共用，DRY） |
+| `cursor_cdp.py` | CDP 协议封装：`CdpProfile` 应用画像 + 目标选择、读写状态、点按钮、截图、写输入框（所有工具共用，DRY） |
+| `chatgpt_cdp.py` | ChatGPT 桌面版的 `CdpProfile`：app:// 页面匹配 + 专属选择器 |
 | `transcripts.py` | 解析 `~/.cursor/projects/<workspace>/agent-transcripts/*.jsonl`，得到结构化对话 |
 | `server/main.py` | FastAPI + WebSocket 桥：HTTP REST + 实时推流 |
+| `scheduler/` | 定时任务：`apps.py` 应用注册表 → `engine.py` 调度 → `send.py` 发送 → `app.py` GUI 服务 |
+| `scheduler_gui/` | 定时任务网页 GUI（原生 HTML/JS，无构建步骤） |
 | `frontend/` | Vite + React + TS + Tailwind，手机优先 UI |
 | `src-tauri/` | Tauri 2 配置，可打包成 Windows 桌面应用或 Android APK |
-| `click_send.py` | 原 CLI 工具（保留），现已复用 `cursor_cdp.py` |
+| `click_send.py` | CLI 工具：`--app cursor/chatgpt` 统一入口 |
 
-## 快速开始
+## 受控应用与 CDP 端口
+
+两个应用都是 Chromium 内核（Electron/CEF），调试端口**只能在启动时指定**，已运行的实例无法就地开启：
+
+| 应用 | CDP 端口 | 启动脚本 | 说明 |
+|---|---|---|---|
+| Cursor | 9222 | `start_cursor_cdp.bat` | 项目内 Agent（legacy）或独立 Cursor Agents 窗口（agents） |
+| ChatGPT (Codex) | 9223 | `start_chatgpt_cdp.bat` | MSIX 应用，经 `shell:AppsFolder` 启动；单窗口 |
+
+新增受控应用只需两步（参考 `chatgpt_cdp.py`）：定义一个 `CdpProfile`（选择器 + 页面匹配 + 进程探测），在 `scheduler/apps.py` 注册端口。
+
+## 定时任务（多应用）
+
+定时向 Cursor Agent 或 ChatGPT 发送消息，支持多条命令按序发送（等上一条完成再发下一条）。
+
+### 1. 启动应用（带调试端口）
+
+```powershell
+.\start_cursor_cdp.ps1     # Cursor  → 9222
+.\start_chatgpt_cdp.ps1    # ChatGPT → 9223
+# 两个都可用 .bat 等价调用
+```
+
+### 2. 启动定时任务 GUI
+
+```powershell
+.\run_scheduler_gui.bat
+# 内部执行 uv sync + python -m scheduler.app
+# 浏览器打开 http://127.0.0.1:8765
+```
+
+GUI 功能：
+
+- 新建任务时选择**目标应用**（Cursor / ChatGPT）、触发时间（每天 HH:MM）、文案
+- Cursor 任务可指定窗口模式 / 目标窗口 / 对话标签 / composer 模式 / 模型；ChatGPT 任务自动隐藏这些专属字段
+- 顶栏实时显示两个应用的 CDP 连接状态
+- 任务支持：立即执行、启用/禁用、删除、立即测试发送
+
+### 3. 一次性计划任务（可选，不走 GUI）
+
+```powershell
+# CLI 直发
+uv run python click_send.py --app chatgpt --send-once -m "继续任务"
+uv run python click_send.py --app cursor --send-once --window-mode agents -m "继续 Phase 2"
+
+# 注册 Windows 计划任务（到点自动启动 Cursor + 发送）
+.\schedule_task.ps1 -TaskName "PaperHub-0630" -At "06:30" -WindowTitle "PaperHub" -Message "按照参考文档，现在开始构建项目..."
+schtasks /Run /TN PaperHub-0630   # 立即触发一次测试
+```
+
+### 定时任务 API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/apps` | 所有受控应用及各自 CDP 状态 |
+| GET | `/api/tasks` | 任务列表 |
+| POST | `/api/tasks` | 创建任务（`app: cursor/chatgpt`） |
+| PATCH | `/api/tasks/{id}` | 更新任务 |
+| DELETE | `/api/tasks/{id}` | 删除任务 |
+| POST | `/api/tasks/{id}/run` | 立即执行任务 |
+| POST | `/api/send-now` | 立即发送（GUI「立即测试发送」） |
+
+任务持久化在 `data/scheduled_tasks.json`。
+
+## 快速开始（远程控制）
 
 ### 1. 用调试端口启动 Cursor
 
@@ -213,12 +282,12 @@ Cursor 的消息列表是**虚拟滚动**的，DOM 里只保留视口附近的�
 - 在 `frontend` 构建时设置 `VITE_API_BASE=http://<pc-ip>:8000`
 - PC 防火墙放行，且手机能 ping 通该 IP
 
-## 原有 CLI 工具
-
-`click_send.py` 仍然可用，行为不变：
+## CLI 工具
 
 ```powershell
-uv run python click_send.py --interval 5
-uv run python click_send.py --list-windows
+uv run python click_send.py --interval 5                       # 循环点击发送（调试用）
+uv run python click_send.py --list-windows                      # 列出 Cursor 窗口
+uv run python click_send.py --app chatgpt --list-windows        # 列出 ChatGPT 窗口
 uv run python click_send.py --dry-run --once
+uv run python click_send.py --app chatgpt --send-once -m "继续任务"
 ```

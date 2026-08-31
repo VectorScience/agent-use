@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cursor 定时任务</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1d27;
+      --border: #2a2f3d;
+      --text: #e6e8ef;
+      --muted: #8b93a7;
+      --accent: #6c8cff;
+      --accent-hover: #5a7af0;
+      --ok: #3ecf8e;
+      --warn: #f5a623;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 24px; }
+    .status-bar {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;
+      padding: 12px 16px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; font-size: 0.875rem;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+    .dot.ok { background: var(--ok); }
+    .dot.err { background: var(--danger); }
+    .grid { display: grid; gap: 20px; }
+    @media (min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 16px; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+    input, select, textarea {
+      width: 100%; padding: 10px 12px; margin-bottom: 12px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font: inherit;
+    }
+    textarea { min-height: 100px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button {
+      padding: 10px 16px; border: none; border-radius: 8px; cursor: pointer;
+      font: inherit; font-weight: 500;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--border); color: var(--text); }
+    .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .btn-sm { padding: 6px 10px; font-size: 0.8rem; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .task-list { list-style: none; padding: 0; margin: 0; }
+    .task-item {
+      border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+      margin-bottom: 10px;
+    }
+    .task-item.disabled { opacity: 0.55; }
+    .task-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .task-name { font-weight: 600; }
+    .badge {
+      font-size: 0.7rem; padding: 3px 10px; border-radius: 999px;
+      background: var(--border); color: var(--muted); font-weight: 500;
+      white-space: nowrap;
+    }
+    .badge.time { background: #1e3a2f; color: #6ee7a8; border: 1px solid #2d5a45; }
+    .badge.legacy { background: #2d3a5c; color: #9eb4ff; border: 1px solid #3d4f7a; }
+    .badge.agents { background: #3a2d5c; color: #c9a0ff; border: 1px solid #5a4080; }
+    .badge.auto { background: #2a3344; color: #a8b4cc; border: 1px solid #3a4558; }
+
+    .tags {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center;
+    }
+    .tag {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 0.72rem; line-height: 1.2; padding: 4px 10px;
+      border-radius: 6px; border: 1px solid transparent;
+      max-width: 100%;
+    }
+    .tag-label {
+      font-size: 0.65rem; opacity: 0.75; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .tag-value {
+      font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 220px;
+    }
+    .tag-window-mode.legacy {
+      background: rgba(110, 140, 255, 0.12); color: #9eb4ff; border-color: rgba(110, 140, 255, 0.25);
+    }
+    .tag-window-mode.agents {
+      background: rgba(180, 130, 255, 0.12); color: #c9a0ff; border-color: rgba(180, 130, 255, 0.25);
+    }
+    .tag-window-mode.auto {
+      background: rgba(140, 160, 200, 0.1); color: #a8b4cc; border-color: rgba(140, 160, 200, 0.2);
+    }
+    .tag-window {
+      background: rgba(108, 140, 255, 0.08); color: #c5d4ff; border-color: rgba(108, 140, 255, 0.18);
+    }
+    .tag-chat {
+      background: rgba(62, 207, 142, 0.1); color: #7eecc0; border-color: rgba(62, 207, 142, 0.22);
+    }
+    .tag-composer {
+      background: rgba(245, 166, 35, 0.12); color: #f5c86a; border-color: rgba(245, 166, 35, 0.28);
+    }
+    .tag-model {
+      background: rgba(255, 107, 107, 0.1); color: #ff9e9e; border-color: rgba(255, 107, 107, 0.22);
+    }
+    .tag-count {
+      background: rgba(108, 140, 255, 0.06); color: var(--muted); border-color: var(--border);
+    }
+    .tag-run {
+      background: rgba(62, 207, 142, 0.06); color: #8b93a7; border-color: var(--border);
+    }
+    .tag-unset {
+      background: transparent; color: var(--muted); border-color: var(--border);
+      border-style: dashed; opacity: 0.7;
+    }
+    .task-meta { display: none; }
+    .task-msg {
+      font-size: 0.85rem; margin-top: 8px; padding: 8px;
+      background: var(--bg); border-radius: 6px;
+      white-space: pre-wrap; max-height: 80px; overflow: hidden;
+    }
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; padding: 12px 18px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; font-size: 0.875rem; z-index: 100;
+      animation: fade 3s forwards;
+    }
+    @keyframes fade { 0%,80%{opacity:1} 100%{opacity:0} }
+    .empty { color: var(--muted); text-align: center; padding: 24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>定时任务</h1>
+    <p class="sub">定时向 Cursor Agent / ChatGPT 发送消息 · 支持多应用多窗口</p>
+
+    <div class="status-bar" id="statusBar">加载中…</div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>新建任务</h2>
+        <form id="taskForm">
+          <label>任务名称</label>
+          <input name="name" required placeholder="例如 PaperHub 早6:30" />
+
+          <div class="row">
+            <div>
+              <label>触发时间 (HH:MM)</label>
+              <input name="time" type="time" required value="06:30" />
+            </div>
+            <div>
+              <label>目标应用</label>
+              <select name="app" id="appSelect">
+                <option value="cursor">Cursor (9222)</option>
+                <option value="chatgpt">ChatGPT (9223)</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="cursorOnlyFields">
+          <div class="row">
+            <div>
+              <label>窗口模式</label>
+              <select name="window_mode" id="windowMode">
+                <option value="auto">自动</option>
+                <option value="legacy">旧版 · 项目内 Agent</option>
+                <option value="agents">新版 · Cursor Agents</option>
+              </select>
+            </div>
+            <div>
+              <label>目标窗口（可选）</label>
+              <select name="window_title" id="windowSelect">
+                <option value="">— 不指定（按模式匹配）—</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label>Agent 对话标签（可选）</label>
+              <select name="chat_tab" id="chatTabSelect">
+                <option value="">— 不切换 —</option>
+              </select>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button type="button" class="btn-secondary btn-sm" id="loadTabsBtn" style="width:100%;margin-bottom:12px">加载对话列表</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label>Composer 模式（如 Agent / Ask）</label>
+              <input name="composer_mode" id="composerMode" placeholder="Agent（默认）" value="Agent" list="modeHints" />
+            </div>
+            <div>
+              <label>模型（如 GLM-5.2）</label>
+              <input name="model" id="modelInput" placeholder="GLM-5.2（默认）" value="GLM-5.2" list="modelHints" />
+            </div>
+          </div>
+          <datalist id="modeHints">
+            <option value="Agent"><option value="Ask"><option value="Edit"><option value="Manual">
+          </datalist>
+          <datalist id="modelHints">
+            <option value="GLM-5.2"><option value="auto"><option value="claude-4"><option value="gpt-4">
+          </datalist>
+          </div><!-- /cursorOnlyFields -->
+
+          <label>发送文案（多条命令用单独一行 <code>---</code> 分隔）</label>
+          <textarea name="message" required placeholder="第一条指令&#10;---&#10;第二条指令（等上一条完成后自动发送）"></textarea>
+
+          <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <input type="checkbox" name="wait_between" checked style="width:auto;margin:0" />
+            多条命令时，等上一条完成后再发下一条
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+            <input type="checkbox" name="no_click" style="width:auto;margin:0" />
+            仅写入输入框，不点击发送（测试用）
+          </label>
+
+          <div class="actions">
+            <button type="submit" class="btn-primary">保存任务</button>
+            <button type="button" class="btn-secondary" id="testSendBtn">立即测试发送</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>当前窗口</h2>
+        <ul class="task-list" id="windowList"><li class="empty">加载中…</li></ul>
+        <button type="button" class="btn-secondary btn-sm" id="refreshBtn">刷新窗口列表</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>已保存的任务</h2>
+      <ul class="task-list" id="taskList"><li class="empty">暂无任务</li></ul>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+
+    function toast(msg) {
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3200);
+    }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      return data;
+    }
+
+    async function loadStatus() {
+      try {
+        const appsRes = await api('/api/apps');
+        const apps = appsRes.apps || [];
+        const app = currentApp();
+        const wins = await api('/api/windows?app=' + app);
+        const parts = apps.map(a => {
+          const label = a.app === 'chatgpt' ? 'ChatGPT' : 'Cursor';
+          return `<span><span class="dot ${a.cdp_reachable ? 'ok' : 'err'}"></span>${label} ${a.cdp_reachable ? '已连接' : '未连接'}</span>`;
+        });
+        if (!parts.length) parts.push('<span class="dot err"></span>无可用应用');
+        document.getElementById('statusBar').innerHTML = parts.join('\n          ');
+        renderWindows(wins.windows || []);
+      } catch (e) {
+        document.getElementById('statusBar').innerHTML =
+          `<span class="dot err"></span>服务未启动或 CDP 不可用`;
+      }
+    }
+
+    function currentApp() {
+      return document.getElementById('appSelect').value || 'cursor';
+    }
+
+    function toggleAppFields() {
+      const isChatgpt = currentApp() === 'chatgpt';
+      document.getElementById('cursorOnlyFields').style.display = isChatgpt ? 'none' : '';
+    }
+
+    function renderWindows(windows) {
+      const ul = document.getElementById('windowList');
+      const sel = document.getElementById('windowSelect');
+      const cur = sel.value;
+      const app = currentApp();
+      const isChatgpt = app === 'chatgpt';
+      sel.innerHTML = '<option value="">— 不指定（按模式匹配）—</option>';
+      if (!windows.length) {
+        const appName = isChatgpt ? 'ChatGPT（运行 start_chatgpt_cdp.bat）' : 'Cursor（运行 start_cursor_cdp.bat）';
+        ul.innerHTML = `<li class="empty">未发现窗口（请确认 ${appName} 已用调试端口启动）</li>`;
+        return;
+      }
+      ul.innerHTML = windows.map(w => `
+        <li class="task-item">
+          ${renderWindowTags(w)}
+        </li>
+      `).join('');
+      if (isChatgpt) return; // ChatGPT 单窗口，无需下拉
+      windows.forEach(w => {
+        const o = document.createElement('option');
+        o.value = w.title;
+        o.textContent = `[${w.mode}] ${w.title}`;
+        sel.appendChild(o);
+      });
+      if (cur) sel.value = cur;
+    }
+
+    const DEFAULT_MODE = 'Agent';
+    const DEFAULT_MODEL = 'GLM-5.2';
+
+    function windowModeLabel(mode) {
+      return { legacy: '旧版 Agent', agents: '新版 Agents', auto: '自动匹配' }[mode] || mode;
+    }
+
+    function formatWindowTitle(title) {
+      if (!title) return null;
+      const m = title.match(/^(.+?) - (.+?) - Cursor/);
+      if (m) return { short: m[2], full: title };
+      return { short: title.replace(/\s*-\s*Cursor\s*$/, ''), full: title };
+    }
+
+    function tag(label, value, cls, title) {
+      const t = title ? ` title="${esc(title)}"` : '';
+      return `<span class="tag ${cls}"${t}><span class="tag-label">${label}</span><span class="tag-value">${esc(value)}</span></span>`;
+    }
+
+    function tagUnset(label, hint) {
+      return `<span class="tag tag-unset"><span class="tag-label">${label}</span><span class="tag-value">${esc(hint)}</span></span>`;
+    }
+
+    function renderTaskTags(t) {
+      const parts = [];
+      const appName = t.app === 'chatgpt' ? 'ChatGPT' : 'Cursor';
+      parts.push(tag('应用', appName, t.app === 'chatgpt' ? 'tag-chat' : 'tag-window'));
+      if (t.app === 'chatgpt') {
+        // ChatGPT 无窗口模式/模型等概念，只显示核心信息
+      } else {
+        parts.push(tag('窗口', windowModeLabel(t.window_mode), `tag-window-mode ${t.window_mode || 'auto'}`));
+        if (t.window_title) {
+          const w = formatWindowTitle(t.window_title);
+          parts.push(tag('项目', w.short, 'tag-window', w.full));
+        } else {
+          parts.push(tagUnset('项目', '任意窗口'));
+        }
+        if (t.chat_tab) {
+          parts.push(tag('对话', t.chat_tab, 'tag-chat', t.chat_tab));
+        }
+        parts.push(tag('模式', t.composer_mode_effective || t.composer_mode || DEFAULT_MODE, 'tag-composer'));
+        parts.push(tag('模型', t.model_effective || t.model || DEFAULT_MODEL, 'tag-model'));
+      }
+      if (t.message_count > 1) {
+        parts.push(tag('命令', `${t.message_count} 条`, 'tag-count'));
+      }
+      if (t.last_run_at) {
+        const status = t.last_result === 'ok' ? '成功' : (t.last_result || '');
+        parts.push(tag('上次', `${t.last_run_at}${status ? ' · ' + status : ''}`, 'tag-run'));
+      }
+      return `<div class="tags">${parts.join('')}</div>`;
+    }
+
+    function renderWindowTags(w) {
+      if (w.mode === 'chatgpt') {
+        return `<div class="tags">${tag('应用', 'ChatGPT', 'tag-chat')}${tag('窗口', w.title, 'tag-window', w.title)}</div>`;
+      }
+      const wm = windowModeLabel(w.mode);
+      const win = formatWindowTitle(w.title);
+      const parts = [
+        tag('类型', wm, `tag-window-mode ${w.mode}`),
+        tag('窗口', win.short, 'tag-window', win.full),
+      ];
+      if (w.foreground) parts.push(tag('状态', '前台', 'tag-chat'));
+      return `<div class="tags">${parts.join('')}</div>`;
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    async function loadTasks() {
+      const { tasks } = await api('/api/tasks');
+      const ul = document.getElementById('taskList');
+      if (!tasks.length) {
+        ul.innerHTML = '<li class="empty">暂无任务，请在左侧添加</li>';
+        return;
+      }
+      ul.innerHTML = tasks.map(t => `
+        <li class="task-item ${t.enabled ? '' : 'disabled'}">
+          <div class="task-head">
+            <span class="task-name">${esc(t.name)}</span>
+            <span class="badge time">${esc(t.time)}</span>
+          </div>
+          ${renderTaskTags(t)}
+          <div class="task-msg">${esc(t.message)}</div>
+          <div class="actions">
+            <button class="btn-secondary btn-sm" data-run="${t.id}">立即执行</button>
+            <button class="btn-secondary btn-sm" data-toggle="${t.id}" data-enabled="${t.enabled}">${t.enabled ? '禁用' : '启用'}</button>
+            <button class="btn-danger btn-sm" data-del="${t.id}">删除</button>
+          </div>
+        </li>
+      `).join('');
+    }
+
+    function formPayload(fd) {
+      const timeVal = fd.get('time');
+      const hhmm = timeVal && timeVal.includes(':') ? timeVal.slice(0, 5) : timeVal;
+      const app = fd.get('app') || 'cursor';
+      const isChatgpt = app === 'chatgpt';
+      return {
+        name: fd.get('name'),
+        time: hhmm,
+        message: fd.get('message'),
+        app,
+        window_title: isChatgpt ? null : (fd.get('window_title') || null),
+        window_mode: isChatgpt ? 'auto' : fd.get('window_mode'),
+        chat_tab: isChatgpt ? null : (fd.get('chat_tab') || null),
+        composer_mode: isChatgpt ? null : (fd.get('composer_mode')?.trim() || null),
+        model: isChatgpt ? null : (fd.get('model')?.trim() || null),
+        wait_between: fd.get('wait_between') === 'on',
+        no_click: fd.get('no_click') === 'on',
+      };
+    }
+
+    async function loadChatTabs() {
+      const fd = new FormData(document.getElementById('taskForm'));
+      const app = fd.get('app') || 'cursor';
+      const wt = fd.get('window_title') || '';
+      const wm = fd.get('window_mode') || 'auto';
+      const q = new URLSearchParams({ app, window_mode: wm });
+      if (wt) q.set('window_title', wt);
+      try {
+        const [tabsRes, settings] = await Promise.all([
+          api('/api/chat-tabs?' + q),
+          api('/api/composer-settings?' + q),
+        ]);
+        const sel = document.getElementById('chatTabSelect');
+        sel.innerHTML = '<option value="">— 不切换 —</option>';
+        (tabsRes.tabs || []).forEach(t => {
+          const o = document.createElement('option');
+          o.value = t.title;
+          o.textContent = (t.selected ? '● ' : '') + t.title;
+          sel.appendChild(o);
+        });
+        if (settings.mode) document.getElementById('composerMode').placeholder = '当前: ' + settings.mode;
+        if (settings.model) document.getElementById('modelInput').placeholder = '当前: ' + settings.model;
+        toast('已加载 ' + (tabsRes.tabs?.length || 0) + ' 个对话');
+      } catch (err) { toast('加载失败: ' + err.message); }
+    }
+
+    document.getElementById('taskForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await api('/api/tasks', {
+          method: 'POST',
+          body: JSON.stringify(formPayload(fd)),
+        });
+        toast('任务已保存');
+        e.target.reset();
+        document.querySelector('[name="time"]').value = '06:30';
+        document.querySelector('[name="composer_mode"]').value = DEFAULT_MODE;
+        document.querySelector('[name="model"]').value = DEFAULT_MODEL;
+        document.querySelector('[name="wait_between"]').checked = true;
+        loadTasks();
+      } catch (err) { toast('保存失败: ' + err.message); }
+    });
+
+    document.getElementById('testSendBtn').addEventListener('click', async () => {
+      const fd = new FormData(document.getElementById('taskForm'));
+      const msg = fd.get('message');
+      if (!msg) { toast('请先填写文案'); return; }
+      try {
+        const payload = formPayload(fd);
+        payload.wait_between = fd.get('wait_between') === 'on';
+        const r = await api('/api/send-now', { method: 'POST', body: JSON.stringify(payload) });
+        if (r.ok) {
+          const n = r.count || 1;
+          toast('成功发送 ' + n + ' 条');
+        } else {
+          toast('失败: ' + (r.reason || ''));
+        }
+      } catch (err) { toast('失败: ' + err.message); }
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', loadStatus);
+    document.getElementById('loadTabsBtn').addEventListener('click', loadChatTabs);
+    document.getElementById('windowSelect').addEventListener('change', () => loadChatTabs().catch(() => {}));
+    document.getElementById('appSelect').addEventListener('change', () => {
+      toggleAppFields();
+      loadStatus();
+    });
+
+    document.getElementById('taskList').addEventListener('click', async (e) => {
+      const run = e.target.dataset.run;
+      const del = e.target.dataset.del;
+      const toggle = e.target.dataset.toggle;
+      if (run) {
+        try {
+          const r = await api('/api/tasks/' + run + '/run', { method: 'POST' });
+          toast(r.ok ? '执行成功' : ('失败: ' + (r.result?.reason || '')));
+          loadTasks();
+        } catch (err) { toast(err.message); }
+      }
+      if (del && confirm('确定删除？')) {
+        await api('/api/tasks/' + del, { method: 'DELETE' });
+        loadTasks();
+      }
+      if (toggle !== undefined) {
+        await api('/api/tasks/' + toggle, {
+          method: 'PATCH',
+          body: JSON.stringify({ enabled: toggle === 'false' }),
+        });
+        loadTasks();
+      }
+    });
+
+    loadStatus();
+    loadTasks();
+    toggleAppFields();
+    setInterval(loadStatus, 15000);
+  </script>
+</body>
+</html>
