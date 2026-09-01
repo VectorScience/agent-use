@@ -164,7 +164,7 @@
 
     <div class="grid">
       <div class="card">
-        <h2>新建任务</h2>
+        <h2 id="formTitle">新建任务</h2>
         <form id="taskForm">
           <label>任务名称</label>
           <input name="name" required placeholder="例如 PaperHub 早6:30" />
@@ -255,8 +255,9 @@
           </div>
 
           <div class="actions">
-            <button type="submit" class="btn-primary">保存任务</button>
+            <button type="submit" class="btn-primary" id="saveBtn">保存任务</button>
             <button type="button" class="btn-secondary" id="testSendBtn">立即测试发送</button>
+            <button type="button" class="btn-secondary" id="cancelEditBtn" style="display:none">取消编辑</button>
           </div>
         </form>
       </div>
@@ -296,6 +297,79 @@
     }
 
     let ACTIVE_APP = 'cursor';
+    let EDITING_TASK_ID = null; // null=新建模式，否则为正在编辑的任务 id
+
+    // 缓存最近一次任务列表，编辑时直接取（避免额外请求）
+    let TASKS_CACHE = [];
+
+    function setEditing(task) {
+      EDITING_TASK_ID = task ? task.id : null;
+      document.getElementById('formTitle').textContent = task ? `编辑任务：${task.name}` : '新建任务';
+      document.getElementById('saveBtn').textContent = task ? '保存修改' : '保存任务';
+      document.getElementById('cancelEditBtn').style.display = task ? '' : 'none';
+    }
+
+    function resetForm() {
+      const form = document.getElementById('taskForm');
+      form.reset();
+      document.querySelector('[name="time"]').value = '06:30';
+      document.querySelector('[name="composer_mode"]').value = DEFAULT_MODE;
+      document.querySelector('[name="model"]').value = DEFAULT_MODEL;
+      document.querySelector('[name="wait_between"]').checked = true;
+      setEditing(null);
+      toggleMessageType();
+    }
+
+    function fillFormFromTask(t) {
+      const form = document.getElementById('taskForm');
+      ACTIVE_APP = t.app === 'chatgpt' ? 'chatgpt' : 'cursor';
+      toggleAppFields();
+      loadStatus();
+
+      form.querySelector('[name="name"]').value = t.name;
+      form.querySelector('[name="time"]').value = t.time;
+      form.querySelector('[name="message"]').value = t.message || '';
+
+      if (t.app === 'chatgpt') {
+        document.getElementById('goalAction').value = t.goal_action || '';
+      } else {
+        form.querySelector('[name="window_mode"]').value = t.window_mode || 'auto';
+        const ws = form.querySelector('[name="window_title"]');
+        if (t.window_title) {
+          // 选项可能未加载，动态补一个再选中
+          if (![...ws.options].some(o => o.value === t.window_title)) {
+            const o = document.createElement('option');
+            o.value = t.window_title;
+            o.textContent = t.window_title;
+            ws.appendChild(o);
+          }
+          ws.value = t.window_title;
+        } else {
+          ws.value = '';
+        }
+        const ct = form.querySelector('[name="chat_tab"]');
+        if (t.chat_tab) {
+          if (![...ct.options].some(o => o.value === t.chat_tab)) {
+            const o = document.createElement('option');
+            o.value = t.chat_tab;
+            o.textContent = t.chat_tab;
+            ct.appendChild(o);
+          }
+          ct.value = t.chat_tab;
+        } else {
+          ct.value = '';
+        }
+        form.querySelector('[name="composer_mode"]').value = t.composer_mode || DEFAULT_MODE;
+        form.querySelector('[name="model"]').value = t.model || DEFAULT_MODEL;
+      }
+
+      form.querySelector('[name="wait_between"]').checked = t.wait_between !== false;
+      form.querySelector('[name="no_click"]').checked = !!t.no_click;
+
+      setEditing(t);
+      toggleMessageType();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 
     async function loadStatus() {
       try {
@@ -453,6 +527,7 @@
 
     async function loadTasks() {
       const { tasks } = await api('/api/tasks');
+      TASKS_CACHE = tasks;
       const ul = document.getElementById('taskList');
       if (!tasks.length) {
         ul.innerHTML = '<li class="empty">暂无任务，请在左侧添加</li>';
@@ -468,6 +543,7 @@
           ${t.goal_action ? '' : `<div class="task-msg">${esc(t.message)}</div>`}
           <div class="actions">
             <button class="btn-secondary btn-sm" data-run="${t.id}">立即执行</button>
+            <button class="btn-secondary btn-sm" data-edit="${t.id}">编辑</button>
             <button class="btn-secondary btn-sm" data-toggle="${t.id}" data-enabled="${t.enabled}">${t.enabled ? '禁用' : '启用'}</button>
             <button class="btn-danger btn-sm" data-del="${t.id}">删除</button>
           </div>
@@ -528,21 +604,29 @@
       const fd = new FormData(e.target);
       const payload = formPayload(fd);
       if (!payload.goal_action && !payload.message.trim()) { toast('发送消息任务需要填写文案'); return; }
+      // PATCH 语义: None=不修改。编辑时改为普通发送任务需显式清空 goal_action
+      const isEdit = !!EDITING_TASK_ID;
+      if (isEdit && !payload.goal_action) payload.goal_action = '';
       try {
-        await api('/api/tasks', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-        toast(payload.goal_action ? '目标操作任务已保存' : '任务已保存');
-        e.target.reset();
-        document.querySelector('[name="time"]').value = '06:30';
-        document.querySelector('[name="composer_mode"]').value = DEFAULT_MODE;
-        document.querySelector('[name="model"]').value = DEFAULT_MODEL;
-        document.querySelector('[name="wait_between"]').checked = true;
-        toggleMessageType();
+        if (isEdit) {
+          await api('/api/tasks/' + EDITING_TASK_ID, {
+            method: 'PATCH',
+            body: JSON.stringify(payload),
+          });
+          toast('修改已保存');
+        } else {
+          await api('/api/tasks', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          });
+          toast(payload.goal_action ? '目标操作任务已保存' : '任务已保存');
+        }
+        resetForm();
         loadTasks();
       } catch (err) { toast('保存失败: ' + err.message); }
     });
+
+    document.getElementById('cancelEditBtn').addEventListener('click', resetForm);
 
     document.getElementById('testSendBtn').addEventListener('click', async () => {
       const fd = new FormData(document.getElementById('taskForm'));
@@ -588,6 +672,13 @@
       const run = e.target.dataset.run;
       const del = e.target.dataset.del;
       const toggle = e.target.dataset.toggle;
+      const edit = e.target.dataset.edit;
+      if (edit) {
+        const t = TASKS_CACHE.find(x => x.id === edit);
+        if (t) fillFormFromTask(t);
+        else toast('任务数据已过期，请刷新');
+        return;
+      }
       if (run) {
         try {
           const r = await api('/api/tasks/' + run + '/run', { method: 'POST' });

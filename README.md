@@ -69,7 +69,7 @@ GUI 功能：
 
 - **顶栏点击「Cursor / ChatGPT」胶囊切换目标应用**（胶囊同时显示各自 CDP 连接状态）；选中 ChatGPT 时右侧出现「恢复目标 / 清除目标」快捷按钮
 - 新建任务：触发时间（每天 HH:MM）；ChatGPT 任务可选类型「发送消息 / 恢复目标 / 清除目标」，目标操作任务无需文案；Cursor 任务可指定窗口模式 / 目标窗口 / 对话标签 / composer 模式 / 模型
-- 任务支持：立即执行、启用/禁用、删除、立即测试发送
+- 任务支持：编辑（回填到上方表单修改）、立即执行、启用/禁用、删除、立即测试发送
 
 ### 3. 一次性计划任务（可选，不走 GUI）
 
@@ -90,7 +90,7 @@ schtasks /Run /TN PaperHub-0630   # 立即触发一次测试
 | GET | `/api/apps` | 所有受控应用及各自 CDP 状态 |
 | GET | `/api/tasks` | 任务列表 |
 | POST | `/api/tasks` | 创建任务（`app: cursor/chatgpt`；ChatGPT 带 `goal_action` 则为目标操作任务，无需 message） |
-| PATCH | `/api/tasks/{id}` | 更新任务 |
+| PATCH | `/api/tasks/{id}` | 更新任务（字段 None=不修改；`goal_action: ""` 清除） |
 | DELETE | `/api/tasks/{id}` | 删除任务 |
 | POST | `/api/tasks/{id}/run` | 立即执行任务 |
 | POST | `/api/send-now` | 立即发送（GUI「立即测试发送」） |

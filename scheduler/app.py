@@ -241,6 +241,7 @@ async def update_task(task_id: str, body: TaskUpdate) -> dict:
     for t in tasks:
         if t.id != task_id:
             continue
+        # 先应用变更，再整体校验（保证类型切换后的一致性）
         if body.name is not None:
             t.name = body.name
         if body.time is not None:
@@ -268,7 +269,17 @@ async def update_task(task_id: str, body: TaskUpdate) -> dict:
         if body.no_click is not None:
             t.no_click = body.no_click
         if body.goal_action is not None:
+            # 空字符串表示显式清除（None=不修改）
             t.goal_action = body.goal_action or None
+
+        if t.goal_action:
+            if t.app != "chatgpt":
+                raise HTTPException(400, "目标操作任务仅支持 ChatGPT")
+            if t.goal_action not in ("resume", "clear", "edit"):
+                raise HTTPException(400, f"未知 goal_action: {t.goal_action}")
+        elif not t.message.strip():
+            raise HTTPException(400, "发送消息任务需要文案")
+
         upsert_task(t)
         return {"task": t.to_dict()}
     raise HTTPException(status_code=404, detail="task not found")
