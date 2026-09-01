@@ -44,6 +44,7 @@ class ScheduledTask:
     wait_timeout_seconds: int = 3600
     enabled: bool = True
     no_click: bool = False
+    goal_action: str | None = None  # 任务类型: None=发送消息 | resume/clear/edit=目标操作（不发文案）
     last_run_at: str | None = None
     last_result: str | None = None
 
@@ -67,6 +68,7 @@ class ScheduledTask:
         wait_timeout_seconds: int = 3600,
         enabled: bool = True,
         no_click: bool = False,
+        goal_action: str | None = None,
     ) -> ScheduledTask:
         return ScheduledTask(
             id=uuid.uuid4().hex[:12],
@@ -83,6 +85,7 @@ class ScheduledTask:
             wait_timeout_seconds=wait_timeout_seconds,
             enabled=enabled,
             no_click=no_click,
+            goal_action=goal_action,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -94,6 +97,10 @@ class ScheduledTask:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ScheduledTask:
+        # 兼容历史字段 resume_goal: bool -> goal_action
+        goal_action = data.get("goal_action")
+        if not goal_action and data.get("resume_goal"):
+            goal_action = "resume"
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
@@ -109,6 +116,7 @@ class ScheduledTask:
             wait_timeout_seconds=int(data.get("wait_timeout_seconds") or 3600),
             enabled=bool(data.get("enabled", True)),
             no_click=bool(data.get("no_click", False)),
+            goal_action=goal_action,
             last_run_at=data.get("last_run_at"),
             last_result=data.get("last_result"),
         )

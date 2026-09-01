@@ -53,26 +53,36 @@ async def run_task(
     *,
     on_done: Callable[[ScheduledTask, dict], None] | None = None,
 ) -> dict:
+    from scheduler import apps
     from scheduler.send import send_message_sequence
 
-    base = cdp_base or get_cdp_base(task.app)
-    profile = get_profile(task.app)
-    messages = task.messages_list()
-    result = await asyncio.to_thread(
-        send_message_sequence,
-        base,
-        messages,
-        window_title=task.window_title,
-        window_mode=task.window_mode,
-        prefer_foreground=not bool(task.window_title),
-        chat_tab=task.chat_tab,
-        composer_mode=task.composer_mode,
-        model=task.model,
-        no_click=task.no_click,
-        wait_between=task.wait_between,
-        wait_timeout_seconds=task.wait_timeout_seconds,
-        profile=profile,
-    )
+    base = cdp_base or apps.get_cdp_base(task.app)
+    profile = apps.get_profile(task.app)
+
+    # 目标操作任务（resume/clear/edit）：只点按钮，不发送文案
+    if task.goal_action:
+        result = await asyncio.to_thread(
+            apps.run_extra_action, task.app, f"goal_{task.goal_action}"
+        )
+        result = dict(result)
+        result["app"] = profile.name
+    else:
+        messages = task.messages_list()
+        result = await asyncio.to_thread(
+            send_message_sequence,
+            base,
+            messages,
+            window_title=task.window_title,
+            window_mode=task.window_mode,
+            prefer_foreground=not bool(task.window_title),
+            chat_tab=task.chat_tab,
+            composer_mode=task.composer_mode,
+            model=task.model,
+            no_click=task.no_click,
+            wait_between=task.wait_between,
+            wait_timeout_seconds=task.wait_timeout_seconds,
+            profile=profile,
+        )
     task.last_run_at = dt.datetime.now().isoformat(timespec="seconds")
     task.last_result = "ok" if result.get("ok") else str(result.get("reason", "failed"))
     upsert_task(task)

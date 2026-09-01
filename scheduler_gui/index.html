@@ -31,11 +31,23 @@
     .status-bar {
       display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;
       padding: 12px 16px; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 10px; font-size: 0.875rem;
+      border-radius: 10px; font-size: 0.875rem; align-items: center;
     }
     .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
     .dot.ok { background: var(--ok); }
     .dot.err { background: var(--danger); }
+    .app-tab {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px; cursor: pointer;
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      font: inherit; font-weight: 500; transition: all 0.15s;
+    }
+    .app-tab:hover { border-color: var(--accent); color: var(--text); }
+    .app-tab.active {
+      background: rgba(108, 140, 255, 0.14); border-color: var(--accent); color: var(--text);
+    }
+    .status-bar .sep { flex: 1; }
+    .goal-btns { display: flex; gap: 8px; }
     .grid { display: grid; gap: 20px; }
     @media (min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
     .card {
@@ -163,11 +175,8 @@
               <input name="time" type="time" required value="06:30" />
             </div>
             <div>
-              <label>目标应用</label>
-              <select name="app" id="appSelect">
-                <option value="cursor">Cursor (9222)</option>
-                <option value="chatgpt">ChatGPT (9223)</option>
-              </select>
+              <label>&nbsp;</label>
+              <div id="appHint" style="font-size:0.8rem;color:var(--muted);padding:10px 0 22px">在顶栏切换目标应用</div>
             </div>
           </div>
 
@@ -220,9 +229,21 @@
           </datalist>
           </div><!-- /cursorOnlyFields -->
 
-          <label>发送文案（多条命令用单独一行 <code>---</code> 分隔）</label>
-          <textarea name="message" required placeholder="第一条指令&#10;---&#10;第二条指令（等上一条完成后自动发送）"></textarea>
+          <div id="chatgptOnlyFields" style="display:none">
+            <label>任务类型</label>
+            <select name="goal_action" id="goalAction">
+              <option value="">发送消息</option>
+              <option value="resume">恢复目标（不发文案）</option>
+              <option value="clear">清除目标（不发文案）</option>
+            </select>
+          </div>
 
+          <div id="messageFields">
+          <label>发送文案（多条命令用单独一行 <code>---</code> 分隔）</label>
+          <textarea name="message" id="messageInput" placeholder="第一条指令&#10;---&#10;第二条指令（等上一条完成后自动发送）"></textarea>
+          </div>
+
+          <div id="sendOptions">
           <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
             <input type="checkbox" name="wait_between" checked style="width:auto;margin:0" />
             多条命令时，等上一条完成后再发下一条
@@ -231,6 +252,7 @@
             <input type="checkbox" name="no_click" style="width:auto;margin:0" />
             仅写入输入框，不点击发送（测试用）
           </label>
+          </div>
 
           <div class="actions">
             <button type="submit" class="btn-primary">保存任务</button>
@@ -273,18 +295,29 @@
       return data;
     }
 
+    let ACTIVE_APP = 'cursor';
+
     async function loadStatus() {
       try {
         const appsRes = await api('/api/apps');
         const apps = appsRes.apps || [];
-        const app = currentApp();
-        const wins = await api('/api/windows?app=' + app);
-        const parts = apps.map(a => {
+        if (!apps.some(a => a.app === ACTIVE_APP)) ACTIVE_APP = 'cursor';
+        const wins = await api('/api/windows?app=' + ACTIVE_APP);
+        const tabs = apps.map(a => {
           const label = a.app === 'chatgpt' ? 'ChatGPT' : 'Cursor';
-          return `<span><span class="dot ${a.cdp_reachable ? 'ok' : 'err'}"></span>${label} ${a.cdp_reachable ? '已连接' : '未连接'}</span>`;
+          const active = a.app === ACTIVE_APP;
+          return `<button type="button" class="app-tab ${active ? 'active' : ''}" data-app="${a.app}">
+            <span class="dot ${a.cdp_reachable ? 'ok' : 'err'}"></span>${label}
+            <small>${a.cdp_reachable ? '已连接' : '未连接'}</small>
+          </button>`;
         });
-        if (!parts.length) parts.push('<span class="dot err"></span>无可用应用');
-        document.getElementById('statusBar').innerHTML = parts.join('\n          ');
+        const goalBtns = ACTIVE_APP === 'chatgpt'
+          ? `<span class="sep"></span><span class="goal-btns">
+              <button type="button" class="btn-secondary btn-sm" data-goal="resume">恢复目标</button>
+              <button type="button" class="btn-secondary btn-sm" data-goal="clear">清除目标</button>
+            </span>`
+          : '';
+        document.getElementById('statusBar').innerHTML = tabs.join('') + goalBtns;
         renderWindows(wins.windows || []);
       } catch (e) {
         document.getElementById('statusBar').innerHTML =
@@ -293,12 +326,27 @@
     }
 
     function currentApp() {
-      return document.getElementById('appSelect').value || 'cursor';
+      return ACTIVE_APP;
+    }
+
+    function currentGoalAction() {
+      return ACTIVE_APP === 'chatgpt' ? (document.getElementById('goalAction').value || '') : '';
     }
 
     function toggleAppFields() {
-      const isChatgpt = currentApp() === 'chatgpt';
+      const isChatgpt = ACTIVE_APP === 'chatgpt';
       document.getElementById('cursorOnlyFields').style.display = isChatgpt ? 'none' : '';
+      document.getElementById('chatgptOnlyFields').style.display = isChatgpt ? '' : 'none';
+      toggleMessageType();
+      const hint = document.getElementById('appHint');
+      if (hint) hint.textContent = isChatgpt ? '目标应用：ChatGPT (9223)' : '目标应用：Cursor (9222)';
+    }
+
+    function toggleMessageType() {
+      const isGoalTask = !!currentGoalAction();
+      document.getElementById('messageFields').style.display = isGoalTask ? 'none' : '';
+      document.getElementById('sendOptions').style.display = isGoalTask ? 'none' : '';
+      document.getElementById('testSendBtn').style.display = isGoalTask ? 'none' : '';
     }
 
     function renderWindows(windows) {
@@ -357,6 +405,10 @@
       parts.push(tag('应用', appName, t.app === 'chatgpt' ? 'tag-chat' : 'tag-window'));
       if (t.app === 'chatgpt') {
         // ChatGPT 无窗口模式/模型等概念，只显示核心信息
+        if (t.goal_action) {
+          const label = { resume: '恢复目标', clear: '清除目标', edit: '编辑目标' }[t.goal_action] || t.goal_action;
+          parts.push(tag('目标', label, 'tag-composer'));
+        }
       } else {
         parts.push(tag('窗口', windowModeLabel(t.window_mode), `tag-window-mode ${t.window_mode || 'auto'}`));
         if (t.window_title) {
@@ -413,7 +465,7 @@
             <span class="badge time">${esc(t.time)}</span>
           </div>
           ${renderTaskTags(t)}
-          <div class="task-msg">${esc(t.message)}</div>
+          ${t.goal_action ? '' : `<div class="task-msg">${esc(t.message)}</div>`}
           <div class="actions">
             <button class="btn-secondary btn-sm" data-run="${t.id}">立即执行</button>
             <button class="btn-secondary btn-sm" data-toggle="${t.id}" data-enabled="${t.enabled}">${t.enabled ? '禁用' : '启用'}</button>
@@ -426,26 +478,28 @@
     function formPayload(fd) {
       const timeVal = fd.get('time');
       const hhmm = timeVal && timeVal.includes(':') ? timeVal.slice(0, 5) : timeVal;
-      const app = fd.get('app') || 'cursor';
+      const app = ACTIVE_APP;
       const isChatgpt = app === 'chatgpt';
+      const goal = currentGoalAction();
       return {
         name: fd.get('name'),
         time: hhmm,
-        message: fd.get('message'),
+        message: goal ? '' : (fd.get('message') || ''),
         app,
         window_title: isChatgpt ? null : (fd.get('window_title') || null),
         window_mode: isChatgpt ? 'auto' : fd.get('window_mode'),
         chat_tab: isChatgpt ? null : (fd.get('chat_tab') || null),
         composer_mode: isChatgpt ? null : (fd.get('composer_mode')?.trim() || null),
         model: isChatgpt ? null : (fd.get('model')?.trim() || null),
-        wait_between: fd.get('wait_between') === 'on',
+        goal_action: goal || null,
+        wait_between: goal ? false : fd.get('wait_between') === 'on',
         no_click: fd.get('no_click') === 'on',
       };
     }
 
     async function loadChatTabs() {
       const fd = new FormData(document.getElementById('taskForm'));
-      const app = fd.get('app') || 'cursor';
+      const app = ACTIVE_APP;
       const wt = fd.get('window_title') || '';
       const wm = fd.get('window_mode') || 'auto';
       const q = new URLSearchParams({ app, window_mode: wm });
@@ -472,17 +526,20 @@
     document.getElementById('taskForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const payload = formPayload(fd);
+      if (!payload.goal_action && !payload.message.trim()) { toast('发送消息任务需要填写文案'); return; }
       try {
         await api('/api/tasks', {
           method: 'POST',
-          body: JSON.stringify(formPayload(fd)),
+          body: JSON.stringify(payload),
         });
-        toast('任务已保存');
+        toast(payload.goal_action ? '目标操作任务已保存' : '任务已保存');
         e.target.reset();
         document.querySelector('[name="time"]').value = '06:30';
         document.querySelector('[name="composer_mode"]').value = DEFAULT_MODE;
         document.querySelector('[name="model"]').value = DEFAULT_MODEL;
         document.querySelector('[name="wait_between"]').checked = true;
+        toggleMessageType();
         loadTasks();
       } catch (err) { toast('保存失败: ' + err.message); }
     });
@@ -507,9 +564,24 @@
     document.getElementById('refreshBtn').addEventListener('click', loadStatus);
     document.getElementById('loadTabsBtn').addEventListener('click', loadChatTabs);
     document.getElementById('windowSelect').addEventListener('change', () => loadChatTabs().catch(() => {}));
-    document.getElementById('appSelect').addEventListener('change', () => {
-      toggleAppFields();
-      loadStatus();
+    document.getElementById('goalAction').addEventListener('change', toggleMessageType);
+
+    // 顶栏：应用切换 + ChatGPT 目标操作快捷按钮（事件委托，元素随 loadStatus 重建）
+    document.getElementById('statusBar').addEventListener('click', async (e) => {
+      const tab = e.target.closest('.app-tab');
+      if (tab && tab.dataset.app !== ACTIVE_APP) {
+        ACTIVE_APP = tab.dataset.app;
+        toggleAppFields();
+        loadStatus();
+        return;
+      }
+      const goal = e.target.dataset.goal;
+      if (goal) {
+        try {
+          const r = await api(`/api/apps/chatgpt/goal/${goal}`, { method: 'POST' });
+          toast(r.ok ? '目标操作成功: ' + goal : ('失败: ' + (r.reason || '')));
+        } catch (err) { toast('失败: ' + err.message); }
+      }
     });
 
     document.getElementById('taskList').addEventListener('click', async (e) => {

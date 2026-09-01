@@ -47,6 +47,39 @@ def supported_apps() -> list[str]:
     return list(DEFAULT_CDP_PORTS)
 
 
+def run_extra_action(app: str | None, action: str, *, window_title: str | None = None) -> dict:
+    """执行应用专属操作（如 ChatGPT 的 goal_resume/goal_clear/goal_edit）。
+
+    应用未声明该能力时立即报错（fail-fast），避免静默失败。
+    """
+    profile = get_profile(app)
+    if action not in profile.extra_actions:
+        raise ValueError(
+            f"应用 {profile.name!r} 不支持操作 {action!r} "
+            f"(支持: {', '.join(profile.extra_actions) or '无'})"
+        )
+
+    if profile.name == APP_CHATGPT:
+        import chatgpt_cdp
+
+        short = action.removeprefix("goal_")  # goal_resume -> resume
+        return chatgpt_cdp.click_goal_action(
+            get_cdp_base(app), short, window_title=window_title
+        )
+
+    return {"ok": False, "reason": f"应用 {profile.name} 未实现 {action}"}
+
+
+def read_extra_status(app: str | None, *, window_title: str | None = None) -> dict:
+    """读取应用专属状态（如 ChatGPT 目标条）。无专属状态的应用返回空。"""
+    profile = get_profile(app)
+    if profile.name == APP_CHATGPT:
+        import chatgpt_cdp
+
+        return chatgpt_cdp.read_goal_status(get_cdp_base(app), window_title=window_title)
+    return {"ok": True, "supported": False}
+
+
 __all__ = [
     "APP_CURSOR",
     "APP_CHATGPT",
@@ -54,4 +87,6 @@ __all__ = [
     "get_profile",
     "get_cdp_base",
     "supported_apps",
+    "run_extra_action",
+    "read_extra_status",
 ]

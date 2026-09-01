@@ -269,6 +269,9 @@ class CdpProfile:
     classify_title: Callable[[str], str] = classify_window_mode
     is_running: Callable[[], bool] = is_cursor_running
     process_name: str = "Cursor.exe"
+    # 应用专属能力声明：支持的额外操作名列表（如 ChatGPT 的目标条操作）。
+    # 空列表 = 无专属操作；GUI / API 据此显隐对应入口。
+    extra_actions: tuple[str, ...] = ()
 
 
 CURSOR_PROFILE = CdpProfile(
@@ -286,7 +289,6 @@ CURSOR_PROFILE = CdpProfile(
     is_running=is_cursor_running,
     process_name="Cursor.exe",
 )
-
 
 @dataclass
 class WorkbenchTarget:

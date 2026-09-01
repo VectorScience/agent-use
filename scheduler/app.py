@@ -23,7 +23,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from scheduler.apps import DEFAULT_CDP_PORTS, get_cdp_base, get_profile, supported_apps
+from scheduler.apps import (
+    DEFAULT_CDP_PORTS,
+    get_cdp_base,
+    get_profile,
+    read_extra_status,
+    run_extra_action,
+    supported_apps,
+)
 from scheduler.engine import run_task, scheduler_loop
 from scheduler.models import ScheduledTask, effective_composer_mode, effective_model, parse_messages
 from scheduler.send import send_message, send_message_sequence
@@ -37,13 +44,17 @@ GUI_DIR = Path(__file__).resolve().parent.parent / "scheduler_gui"
 class TaskCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     time: str = Field(description="HH:MM")
-    message: str = Field(min_length=1, description="单条或多条（用 --- 分隔）")
+    message: str = Field(default="", description="发送文案；goal_action 任务可留空")
     app: str = "cursor"
     window_title: str | None = None
     window_mode: str = "auto"
     chat_tab: str | None = None
     composer_mode: str | None = None
     model: str | None = None
+    goal_action: str | None = Field(
+        default=None,
+        description="任务类型: 空=发送消息 | resume/clear/edit=目标操作（不发文案）",
+    )
     wait_between: bool = True
     wait_timeout_seconds: int = 3600
     enabled: bool = True
@@ -60,6 +71,7 @@ class TaskUpdate(BaseModel):
     chat_tab: str | None = None
     composer_mode: str | None = None
     model: str | None = None
+    goal_action: str | None = None
     wait_between: bool | None = None
     wait_timeout_seconds: int | None = None
     enabled: bool | None = None
@@ -173,6 +185,21 @@ async def chat_tabs(
     return {"tabs": tabs}
 
 
+@app.get("/api/apps/{app}/goal")
+async def goal_status(app: str) -> dict:
+    """应用专属状态（当前仅 ChatGPT 目标条）。"""
+    return await asyncio.to_thread(read_extra_status, app)
+
+
+@app.post("/api/apps/{app}/goal/{action}")
+async def goal_action(app: str, action: str) -> dict:
+    """应用专属操作（当前仅 ChatGPT 目标条: resume | clear | edit）。"""
+    try:
+        return await asyncio.to_thread(run_extra_action, app, f"goal_{action}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/tasks")
 async def get_tasks() -> dict:
     tasks = load_tasks()
@@ -181,6 +208,13 @@ async def get_tasks() -> dict:
 
 @app.post("/api/tasks")
 async def create_task(body: TaskCreate) -> dict:
+    if body.goal_action:
+        if body.app != "chatgpt":
+            raise HTTPException(400, "目标操作任务仅支持 ChatGPT")
+        if body.goal_action not in ("resume", "clear", "edit"):
+            raise HTTPException(400, f"未知 goal_action: {body.goal_action}")
+    elif not body.message.strip():
+        raise HTTPException(400, "发送消息任务需要文案")
     task = ScheduledTask.new(
         name=body.name,
         time=body.time,
@@ -195,6 +229,7 @@ async def create_task(body: TaskCreate) -> dict:
         wait_timeout_seconds=body.wait_timeout_seconds,
         enabled=body.enabled,
         no_click=body.no_click,
+        goal_action=body.goal_action,
     )
     upsert_task(task)
     return {"task": task.to_dict()}
@@ -232,6 +267,8 @@ async def update_task(task_id: str, body: TaskUpdate) -> dict:
             t.enabled = body.enabled
         if body.no_click is not None:
             t.no_click = body.no_click
+        if body.goal_action is not None:
+            t.goal_action = body.goal_action or None
         upsert_task(t)
         return {"task": t.to_dict()}
     raise HTTPException(status_code=404, detail="task not found")
